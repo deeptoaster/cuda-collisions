@@ -57,6 +57,7 @@ int main(int argc, char *argv[]) {
   unsigned int *d_objects_in;
   unsigned int *d_objects_out;
   uint32_t *d_radices;
+  uint32_t *d_radix_sums;
   
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
@@ -69,6 +70,7 @@ int main(int argc, char *argv[]) {
              sizeof(unsigned int));
   cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
              NUM_RADICES * sizeof(uint32_t));
+  cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
   
   gpuErrChk(cudaGetLastError());
   
@@ -83,13 +85,28 @@ int main(int argc, char *argv[]) {
   gpuErrChk(cudaGetLastError());
   
   cudaSortCells(d_cells_in, d_objects_in, d_cells_out, d_objects_out,
-                d_radices, num_objects);
+                d_radices, d_radix_sums, num_objects);
   
   gpuErrChk(cudaGetLastError());
   
   cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
+  
+  gpuErrChk(cudaGetLastError());
+  
+  cudaFree(d_positions);
+  cudaFree(d_velocities);
+  cudaFree(d_dims);
+  cudaFree(d_cells_in);
+  cudaFree(d_cells_out);
+  cudaFree(d_objects_in);
+  cudaFree(d_objects_out);
+  cudaFree(d_radices);
+  cudaFree(d_radix_sums);
+  free(positions);
+  free(velocities);
+  free(dims);
   
   gpuErrChk(cudaGetLastError());
   

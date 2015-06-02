@@ -6,8 +6,12 @@
 #define NUM_BLOCKS 16
 #define GROUPS_PER_BLOCK 12
 #define THREADS_PER_GROUP 16
-#define PADDED_SIZE 256
-#define UINT32_MAX 0xffffffff
+#define PADDED_BLOCKS 16
+#define PADDED_GROUPS 256
+
+#ifndef UINT32_MAX
+  #define UINT32_MAX 0xffffffff
+#endif
 
 void cudaInitCells(uint32_t *cells, unsigned int *objects, float *positions,
                    float *dims, unsigned int num_objects, float cell_dim,
@@ -18,4 +22,5 @@ void cudaInitObjects(float *positions, float *velocities, float *dims,
                      unsigned int threads_per_block);
 void cudaSortCells(uint32_t *cells_in, unsigned int *objects_in,
                    uint32_t *cells_out, unsigned int *objects_out,
-                   uint32_t *radices, unsigned int num_objects);
+                   uint32_t *radices, uint32_t *radix_sums,
+                   unsigned int num_objects);

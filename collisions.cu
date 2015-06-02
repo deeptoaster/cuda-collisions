@@ -4,6 +4,41 @@
 #include <curand.h>
 #include "collisions.cuh"
 
+__device__ void dPrefixSum(uint32_t *values, unsigned int n) {
+  int offset = 1;
+  int a;
+  uint32_t temp;
+  
+  // upsweep
+  for (int d = n / 2; d > 0; d /= 2) {
+    __syncthreads();
+    
+    if (threadIdx.x < d) {
+      a = (threadIdx.x * 2 + 1) * offset - 1;
+      values[a + offset] += values[a];
+    }
+    
+    offset *= 2;
+  }
+  
+  if (!threadIdx.x) {
+    values[n - 1] = 0;
+  }
+  
+  // downsweep
+  for (int d = 1; d < n; d *= 2) {
+    offset /= 2;
+    __syncthreads();
+    
+    if (threadIdx.x < d) {
+      a = (threadIdx.x * 2 + 1) * offset - 1;
+      temp = values[a];
+      values[a] = values[a + offset];
+      values[a + offset] += temp;
+    }
+  }
+}
+
 __global__ void InitCellKernel(uint32_t *cells, unsigned int *objects, 
                                float *positions, float *dims, unsigned int n,
                                float cell_dim) {
@@ -89,12 +124,68 @@ __global__ void InitCellKernel(uint32_t *cells, unsigned int *objects,
   }
 }
 
-__global__ void RadixSumKernel(uint32_t *radices) {
+__global__ void RadixOrderKernel(uint32_t *keys_in, unsigned int *values_in,
+                                 uint32_t *keys_out, unsigned int *values_out,
+                                 uint32_t *radices, uint32_t *radix_sums,
+                                 unsigned int n, int shift) {
   extern __shared__ uint32_t s[];
-  uint32_t *t = s + PADDED_SIZE;
-  int offset;
-  int a;
-  uint32_t temp;
+  uint32_t *t = s + NUM_RADICES;
+  unsigned int cells_per_group = n / NUM_BLOCKS / GROUPS_PER_BLOCK;
+  int group = threadIdx.x / THREADS_PER_GROUP;
+  int group_start = (blockIdx.x * GROUPS_PER_BLOCK + group) * cells_per_group;
+  int group_end = group_start + cells_per_group;
+  uint32_t k;
+  
+  // initialize shared memory
+  for (int i = threadIdx.x; i < NUM_RADICES; i += blockDim.x) {
+    s[i] = radix_sums[i];
+    
+    // copy the last element in each prefix-sum to a separate array
+    if (!((i + 1) % (NUM_RADICES / NUM_BLOCKS))) {
+      t[i / (NUM_RADICES * NUM_BLOCKS)] = s[i];
+    }
+  }
+  
+  // add padding to array for prefix-sum
+  for (int i = threadIdx.x + NUM_BLOCKS; i < PADDED_BLOCKS; i += blockDim.x) {
+    t[i] = 0;
+  }
+  
+  // calculate prefix-sum on radix counters
+  dPrefixSum(t, PADDED_BLOCKS);
+  
+  // add offsets to prefix-sum values
+  for (int i = threadIdx.x; i < NUM_RADICES; i += blockDim.x) {
+    s[i] += t[i / (NUM_RADICES * NUM_BLOCKS)];
+  }
+  
+  // add offsets to radix counters
+  for (int i = threadIdx.x; i < GROUPS_PER_BLOCK * NUM_RADICES; i +=
+      blockDim.x) {
+    t[i] = radices[(i / GROUPS_PER_BLOCK * NUM_BLOCKS + blockIdx.x) *
+        GROUPS_PER_BLOCK + i % GROUPS_PER_BLOCK] + s[i / GROUPS_PER_BLOCK];
+  }
+  
+  // rearrange key-value pairs
+  for (int i = group_start + threadIdx.x % THREADS_PER_GROUP; i < group_end;
+      i += THREADS_PER_GROUP) {
+    // need only avoid bank conflicts by group
+    k = t[(keys_in[i] >> shift & NUM_RADICES - 1) * GROUPS_PER_BLOCK + group];
+    
+    // write key-value pairs sequentially by thread in the thread group
+    for (int j = 0; j < THREADS_PER_GROUP; j++) {
+      if (threadIdx.x % THREADS_PER_GROUP == j) {
+        keys_out[k] = keys_in[i];
+        values_out[k] = values_in[i];
+      }
+    }
+  }
+}
+
+__global__ void RadixSumKernel(uint32_t *radices, uint32_t *radix_sums) {
+  extern __shared__ uint32_t s[];
+  uint32_t total;
+  uint32_t left;
   uint32_t *radix = radices + blockIdx.x * NUM_RADICES * GROUPS_PER_BLOCK;
   
   for (int j = 0; j < NUM_RADICES / NUM_BLOCKS; j++) {
@@ -105,46 +196,17 @@ __global__ void RadixSumKernel(uint32_t *radices) {
     }
     
     // add padding to array for prefix-sum
-    for (int i = threadIdx.x + NUM_BLOCKS * GROUPS_PER_BLOCK; i < PADDED_SIZE;
-        i += blockDim.x) {
+    for (int i = threadIdx.x + NUM_BLOCKS * GROUPS_PER_BLOCK; i <
+        PADDED_GROUPS; i += blockDim.x) {
       s[i] = 0;
     }
     
     if (!threadIdx.x) {
-      t[j] = s[PADDED_SIZE - 1];
+      total = s[PADDED_GROUPS - 1];
     }
     
     // calculate prefix-sum on radix counters
-    offset = 1;
-    
-    // upsweep
-    for (int d = PADDED_SIZE / 2; d > 0; d /= 2) {
-      __syncthreads();
-      
-      if (threadIdx.x < d) {
-        a = (threadIdx.x * 2 + 1) * offset - 1;
-        s[a + offset] += s[a];
-      }
-      
-      offset *= 2;
-    }
-    
-    if (!threadIdx.x) {
-      s[PADDED_SIZE - 1] = 0;
-    }
-    
-    // downsweep
-    for (int d = 1; d < PADDED_SIZE; d *= 2) {
-      offset /= 2;
-      __syncthreads();
-      
-      if (threadIdx.x < d) {
-        a = (threadIdx.x * 2 + 1) * offset - 1;
-        temp = s[a];
-        s[a] = s[a + offset];
-        s[a + offset] += temp;
-      }
-    }
+    dPrefixSum(s, PADDED_GROUPS);
     
     // copy to global memory
     for (int i = threadIdx.x; i < NUM_BLOCKS * GROUPS_PER_BLOCK; i +=
@@ -152,14 +214,17 @@ __global__ void RadixSumKernel(uint32_t *radices) {
       radix[i] = s[i];
     }
     
-    // calculate total sum
+    // calculate total sum and copy to global memory
     if (!threadIdx.x) {
-      t[j] += s[PADDED_SIZE - 1];
+      total += s[PADDED_GROUPS - 1];
       
       // calculate prefix-sum on local radices
       if (j) {
-        t[j] += t[j - 1];
+        total += left;
       }
+      
+      left = total;
+      radix_sums[blockIdx.x * NUM_RADICES / NUM_BLOCKS + j] = total;
     }
     
     // move to next radix
@@ -171,7 +236,7 @@ __global__ void RadixTabulateKernel(uint32_t *keys,
                                     uint32_t *radices,
                                     unsigned int n, int shift) {
   extern __shared__ uint32_t s[];
-  unsigned int cells_per_group = n / gridDim.x / GROUPS_PER_BLOCK;
+  unsigned int cells_per_group = n / NUM_BLOCKS / GROUPS_PER_BLOCK;
   int group = threadIdx.x / THREADS_PER_GROUP;
   int group_start = (blockIdx.x * GROUPS_PER_BLOCK + group) * cells_per_group;
   int group_end = group_start + cells_per_group;
@@ -200,7 +265,7 @@ __global__ void RadixTabulateKernel(uint32_t *keys,
   // copy to global memory
   for (int i = threadIdx.x; i < GROUPS_PER_BLOCK * NUM_RADICES; i +=
       blockDim.x) {
-    radices[(i / GROUPS_PER_BLOCK * gridDim.x + blockIdx.x) *
+    radices[(i / GROUPS_PER_BLOCK * NUM_BLOCKS + blockIdx.x) *
         GROUPS_PER_BLOCK + i % GROUPS_PER_BLOCK] = s[i];
   }
 }
@@ -267,18 +332,24 @@ void cudaInitObjects(float *positions, float *velocities, float *dims,
  * @param cells_out sorted array of cells.
  * @param objects_out array of objects sorted by corresponding cells.
  * @param radices working array to hold radix data.
+ * @param radix_sums working array to hold radix prefix sums.
  * @param num_objects the number of objects included.
  */
 void cudaSortCells(uint32_t *cells_in, unsigned int *objects_in,
                    uint32_t *cells_out, unsigned int *objects_out,
-                   uint32_t *radices, unsigned int num_objects) {
+                   uint32_t *radices, uint32_t *radix_sums,
+                   unsigned int num_objects) {
   for (int i = 0; i < 32; i += L) {
     RadixTabulateKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                           GROUPS_PER_BLOCK * NUM_RADICES * sizeof(uint32_t)>>>(
         cells_in, radices, num_objects * DIM_2, i);
     RadixSumKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
-                     PADDED_SIZE * sizeof(uint32_t) + NUM_RADICES /
-                         NUM_BLOCKS * sizeof(uint32_t)>>>(
-        radices);
+                     PADDED_GROUPS * sizeof(uint32_t)>>>(
+        radices, radix_sums);
+    RadixOrderKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
+                       NUM_RADICES * sizeof(uint32_t) + GROUPS_PER_BLOCK *
+                       NUM_RADICES * sizeof(uint32_t)>>>(
+        cells_in, objects_in, cells_out, objects_out, radices, radix_sums,
+        num_objects * DIM_2, i);
   }
 }
