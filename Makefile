@@ -36,5 +36,8 @@ collisions: collisions.cpp collisions.o
 collisions.o: collisions.cu
 	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
 
+test: collisions_test.cpp collisions.o
+	$(CC) $< -o collisions_$@ collisions.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
+
 clean:
-	rm -f *.o $(TARGETS)
+	rm -f *.o $(TARGETS) collisions_test

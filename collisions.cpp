@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
   }
   
   unsigned int num_objects = atoi(argv[1]);
-  float max_velocity = atoi(argv[2]);
+  float max_speed = atoi(argv[2]);
   float max_dim = atoi(argv[3]);
   
   if (argc >= 5) {
@@ -46,6 +46,7 @@ int main(int argc, char *argv[]) {
   
   object_size = num_objects * DIM * sizeof(float);
   
+  unsigned int cell_size = num_objects * DIM_2 * sizeof(uint32_t);
   float *positions = (float *) malloc(object_size);
   float *velocities = (float *) malloc(object_size);
   float *dims = (float *) malloc(object_size);
@@ -54,46 +55,32 @@ int main(int argc, char *argv[]) {
   float *d_dims;
   uint32_t *d_cells_in;
   uint32_t *d_cells_out;
-  unsigned int *d_objects_in;
-  unsigned int *d_objects_out;
+  uint32_t *d_objects_in;
+  uint32_t *d_objects_out;
   uint32_t *d_radices;
   uint32_t *d_radix_sums;
   
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
-  cudaMalloc((void **) &d_cells_in, num_objects * DIM_2 * sizeof(uint32_t));
-  cudaMalloc((void **) &d_cells_out, num_objects * DIM_2 * sizeof(uint32_t));
-  cudaMalloc((void **) &d_objects_in, num_objects * DIM_2 *
-             sizeof(unsigned int));
-  cudaMalloc((void **) &d_objects_out, num_objects * DIM_2 *
-             sizeof(unsigned int));
+  cudaMalloc((void **) &d_cells_in, cell_size);
+  cudaMalloc((void **) &d_cells_out, cell_size);
+  cudaMalloc((void **) &d_objects_in, cell_size);
+  cudaMalloc((void **) &d_objects_out, cell_size);
   cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
              NUM_RADICES * sizeof(uint32_t));
   cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
-  
-  gpuErrChk(cudaGetLastError());
-  
-  cudaInitObjects(d_positions, d_velocities, d_dims, num_objects, max_velocity, 
+  cudaInitObjects(d_positions, d_velocities, d_dims, num_objects, max_speed, 
                   max_dim, num_blocks, threads_per_block);
-  
-  gpuErrChk(cudaGetLastError());
-  
   cudaInitCells(d_cells_in, d_objects_in, d_positions, d_dims, num_objects,
                 max_dim, num_blocks, threads_per_block);
-  
-  gpuErrChk(cudaGetLastError());
-  
   cudaSortCells(d_cells_in, d_objects_in, d_cells_out, d_objects_out,
                 d_radices, d_radix_sums, num_objects);
-  
-  gpuErrChk(cudaGetLastError());
-  
   cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
   
-  gpuErrChk(cudaGetLastError());
+  
   
   cudaFree(d_positions);
   cudaFree(d_velocities);

@@ -1,5 +1,6 @@
 PROPOSAL.md
 *.o
 /collisions
+/collisions_test
 /html/
 /doxygen*
