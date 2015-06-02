@@ -89,6 +89,84 @@ __global__ void InitCellKernel(uint32_t *cells, unsigned int *objects,
   }
 }
 
+__global__ void RadixSumKernel(uint32_t *radices) {
+  extern __shared__ uint32_t s[];
+  uint32_t *t = s + PADDED_SIZE;
+  int offset;
+  int a;
+  uint32_t temp;
+  uint32_t *radix = radices + blockIdx.x * NUM_RADICES * GROUPS_PER_BLOCK;
+  
+  for (int j = 0; j < NUM_RADICES / NUM_BLOCKS; j++) {
+    // initialize shared memory
+    for (int i = threadIdx.x; i < NUM_BLOCKS * GROUPS_PER_BLOCK; i +=
+        blockDim.x) {
+      s[i] = radix[i];
+    }
+    
+    // add padding to array for prefix-sum
+    for (int i = threadIdx.x + NUM_BLOCKS * GROUPS_PER_BLOCK; i < PADDED_SIZE;
+        i += blockDim.x) {
+      s[i] = 0;
+    }
+    
+    if (!threadIdx.x) {
+      t[j] = s[PADDED_SIZE - 1];
+    }
+    
+    // calculate prefix-sum on radix counters
+    offset = 1;
+    
+    // upsweep
+    for (int d = PADDED_SIZE / 2; d > 0; d /= 2) {
+      __syncthreads();
+      
+      if (threadIdx.x < d) {
+        a = (threadIdx.x * 2 + 1) * offset - 1;
+        s[a + offset] += s[a];
+      }
+      
+      offset *= 2;
+    }
+    
+    if (!threadIdx.x) {
+      s[PADDED_SIZE - 1] = 0;
+    }
+    
+    // downsweep
+    for (int d = 1; d < PADDED_SIZE; d *= 2) {
+      offset /= 2;
+      __syncthreads();
+      
+      if (threadIdx.x < d) {
+        a = (threadIdx.x * 2 + 1) * offset - 1;
+        temp = s[a];
+        s[a] = s[a + offset];
+        s[a + offset] += temp;
+      }
+    }
+    
+    // copy to global memory
+    for (int i = threadIdx.x; i < NUM_BLOCKS * GROUPS_PER_BLOCK; i +=
+        blockDim.x) {
+      radix[i] = s[i];
+    }
+    
+    // calculate total sum
+    if (!threadIdx.x) {
+      t[j] += s[PADDED_SIZE - 1];
+      
+      // calculate prefix-sum on local radices
+      if (j) {
+        t[j] += t[j - 1];
+      }
+    }
+    
+    // move to next radix
+    radix += NUM_BLOCKS * GROUPS_PER_BLOCK;
+  }
+}
+
 __global__ void RadixTabulateKernel(uint32_t *keys,
                                     uint32_t *radices,
                                     unsigned int n, int shift) {
@@ -100,8 +178,8 @@ __global__ void RadixTabulateKernel(uint32_t *keys,
   uint32_t k;
   
   // initialize shared memory
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < GROUPS_PER_BLOCK *
-      NUM_RADICES; i += gridDim.x * blockDim.x) {
+  for (int i = threadIdx.x; i < GROUPS_PER_BLOCK * NUM_RADICES; i +=
+      blockDim.x) {
     s[i] = 0;
   }
   
@@ -120,8 +198,8 @@ __global__ void RadixTabulateKernel(uint32_t *keys,
   }
   
   // copy to global memory
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < GROUPS_PER_BLOCK *
-      NUM_RADICES; i += gridDim.x * blockDim.x) {
+  for (int i = threadIdx.x; i < GROUPS_PER_BLOCK * NUM_RADICES; i +=
+      blockDim.x) {
     radices[(i / GROUPS_PER_BLOCK * gridDim.x + blockIdx.x) *
         GROUPS_PER_BLOCK + i % GROUPS_PER_BLOCK] = s[i];
   }
@@ -194,9 +272,13 @@ void cudaInitObjects(float *positions, float *velocities, float *dims,
 void cudaSortCells(uint32_t *cells_in, unsigned int *objects_in,
                    uint32_t *cells_out, unsigned int *objects_out,
                    uint32_t *radices, unsigned int num_objects) {
-  for (int i = 0; i < sizeof(uint32_t) * 8; i += L) {
+  for (int i = 0; i < 32; i += L) {
     RadixTabulateKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                           GROUPS_PER_BLOCK * NUM_RADICES * sizeof(uint32_t)>>>(
         cells_in, radices, num_objects * DIM_2, i);
+    RadixSumKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
+                     PADDED_SIZE * sizeof(uint32_t) + NUM_RADICES /
+                         NUM_BLOCKS * sizeof(uint32_t)>>>(
+        radices);
   }
 }

@@ -6,6 +6,7 @@
 #define NUM_BLOCKS 16
 #define GROUPS_PER_BLOCK 12
 #define THREADS_PER_GROUP 16
+#define PADDED_SIZE 256
 #define UINT32_MAX 0xffffffff
 
 void cudaInitCells(uint32_t *cells, unsigned int *objects, float *positions,

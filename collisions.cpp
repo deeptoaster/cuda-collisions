@@ -69,12 +69,24 @@ int main(int argc, char *argv[]) {
              sizeof(unsigned int));
   cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
              NUM_RADICES * sizeof(uint32_t));
+  
+  gpuErrChk(cudaGetLastError());
+  
   cudaInitObjects(d_positions, d_velocities, d_dims, num_objects, max_velocity, 
                   max_dim, num_blocks, threads_per_block);
+  
+  gpuErrChk(cudaGetLastError());
+  
   cudaInitCells(d_cells_in, d_objects_in, d_positions, d_dims, num_objects,
                 max_dim, num_blocks, threads_per_block);
+  
+  gpuErrChk(cudaGetLastError());
+  
   cudaSortCells(d_cells_in, d_objects_in, d_cells_out, d_objects_out,
                 d_radices, num_objects);
+  
+  gpuErrChk(cudaGetLastError());
+  
   cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
