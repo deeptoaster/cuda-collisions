@@ -5,9 +5,9 @@
 #include <cuda_runtime.h>
 #include "collisions.cuh"
 
-#define NUM_OBJECTS 65536
+#define NUM_OBJECTS 16
 #define MAX_SPEED 0.5
-#define MAX_DIM 0.25
+#define MAX_DIM 0.5
 #define COLS 8
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -16,6 +16,8 @@ unsigned int num_blocks = 100;
 unsigned int threads_per_block = 512;
 unsigned int object_size = NUM_OBJECTS * DIM * sizeof(float);
 unsigned int cell_size = NUM_OBJECTS * DIM_2 * sizeof(uint32_t);
+unsigned int cell_count;
+unsigned int *d_temp;
 float *positions;
 float *velocities;
 float *dims;
@@ -40,10 +42,15 @@ inline void gpuAssert(cudaError_t code, const char *file, int line,
   }
 }
 
+/**
+ * @brief Tests cudaInitCells for cell assignment correctness.
+ * @param n number of objects whose cells are checked and displayed.
+ */
 void TestInitCells(int n) {
   printf("Testing InitCells...\n");
-  cudaInitCells(d_cells, d_objects, d_positions, d_dims, NUM_OBJECTS,
-                MAX_DIM, num_blocks, threads_per_block);
+  cell_count = cudaInitCells(d_cells, d_objects, d_positions, d_dims,
+                             NUM_OBJECTS, MAX_DIM, d_temp, num_blocks,
+                             threads_per_block);
   cudaMemcpy(cells, d_cells, cell_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(objects, d_objects, cell_size, cudaMemcpyDeviceToHost);
   
@@ -78,6 +85,10 @@ void TestInitCells(int n) {
   printf("\n");
 }
 
+/**
+ * @brief Tests cudaInitObjects for object constraint satisfaction.
+ * @param n number of objects whose properties are checked and displayed.
+ */
 void TestInitObjects(int n) {
   printf("Testing InitObjects...\n");
   cudaInitObjects(d_positions, d_velocities, d_dims, NUM_OBJECTS, MAX_SPEED, 
@@ -129,6 +140,10 @@ void TestInitObjects(int n) {
   printf("\n");
 }
 
+/**
+ * @brief Tests cudaPrefixSum for correctness.
+ * @param n number of elements on which to perform a prefix sum.
+ */
 void TestPrefixSum(int n) {
   printf("Testing PrefixSum...\n");
   
@@ -153,7 +168,7 @@ void TestPrefixSum(int n) {
       printf("\n");
     }
     
-    assert(arr[i] == i * (i - 1) / 2);
+    assert((int) arr[i] == i * (i - 1) / 2);
   }
   
   free(arr);
@@ -161,12 +176,19 @@ void TestPrefixSum(int n) {
   printf("\n");
 }
 
+/**
+ * @brief Tests cudaInitCells for count and cudaSortCells for radix sort.
+ * @param n when multiplied by DIM_2, the number of cells to check.
+ */
 void TestSortCells(int n) {
   printf("TestingSortCells...\n");
   cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp,
                 d_radices, d_radix_sums, NUM_OBJECTS);
   cudaMemcpy(cells, d_cells, cell_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(objects, d_objects, cell_size, cudaMemcpyDeviceToHost);
+  assert(cell_count && cell_count <= NUM_OBJECTS * DIM_2);
+  assert(cells[cell_count] == UINT32_MAX && cells[cell_count - 1] !=
+      UINT32_MAX);
   
   if (NUM_OBJECTS < n) {
     n = NUM_OBJECTS;
@@ -203,6 +225,7 @@ int main(int argc, char *argv[]) {
   dims = (float *) malloc(object_size);
   cells = (uint32_t *) malloc(cell_size);
   objects = (uint32_t *) malloc(cell_size);
+  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
@@ -215,7 +238,7 @@ int main(int argc, char *argv[]) {
   cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
   TestPrefixSum(256);
   TestInitObjects(16);
-  TestInitCells(4);
+  TestInitCells(16);
   TestSortCells(16);
   gpuErrChk(cudaGetLastError());
   free(positions);
@@ -223,6 +246,7 @@ int main(int argc, char *argv[]) {
   free(dims);
   free(cells);
   free(objects);
+  cudaFree(d_temp);
   cudaFree(d_positions);
   cudaFree(d_velocities);
   cudaFree(d_dims);
@@ -232,4 +256,6 @@ int main(int argc, char *argv[]) {
   cudaFree(d_objects_temp);
   cudaFree(d_radices);
   cudaFree(d_radix_sums);
+  printf("All tests passed.\n");
+  return 0;
 }

@@ -13,9 +13,16 @@
   #define UINT32_MAX 0xffffffff
 #endif
 
-void cudaInitCells(uint32_t *cells, uint32_t *objects, float *positions,
-                   float *dims, unsigned int num_objects, float cell_dim,
-                   unsigned int num_blocks, unsigned int threads_per_block);
+unsigned int cudaCellCollide(uint32_t *cells, uint32_t *objects,
+                             float *positions, float *velocities, float *dims,
+                             unsigned int num_objects, unsigned int num_cells,
+                             unsigned int *temp, unsigned int num_blocks,
+                             unsigned int threads_per_block);
+unsigned int cudaInitCells(uint32_t *cells, uint32_t *objects,
+                           float *positions, float *dims,
+                           unsigned int num_objects, float cell_dim,
+                           unsigned int *temp, unsigned int num_blocks,
+                           unsigned int threads_per_block);
 void cudaInitObjects(float *positions, float *velocities, float *dims,
                      unsigned int num_objects, float max_speed, float max_dim,
                      unsigned int num_blocks, unsigned int threads_per_block);

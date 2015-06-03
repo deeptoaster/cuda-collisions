@@ -27,8 +27,8 @@ int main(int argc, char *argv[]) {
   }
   
   unsigned int num_objects = atoi(argv[1]);
-  float max_speed = atoi(argv[2]);
-  float max_dim = atoi(argv[3]);
+  float max_speed = atof(argv[2]);
+  float max_dim = atof(argv[3]);
   
   if (argc >= 5) {
     num_blocks = atoi(argv[4]);
@@ -47,6 +47,9 @@ int main(int argc, char *argv[]) {
   object_size = num_objects * DIM * sizeof(float);
   
   unsigned int cell_size = num_objects * DIM_2 * sizeof(uint32_t);
+  unsigned int num_cells;
+  unsigned int num_collisions;
+  unsigned int *d_temp;
   float *positions = (float *) malloc(object_size);
   float *velocities = (float *) malloc(object_size);
   float *dims = (float *) malloc(object_size);
@@ -60,6 +63,7 @@ int main(int argc, char *argv[]) {
   uint32_t *d_radices;
   uint32_t *d_radix_sums;
   
+  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
@@ -72,16 +76,20 @@ int main(int argc, char *argv[]) {
   cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
   cudaInitObjects(d_positions, d_velocities, d_dims, num_objects, max_speed, 
                   max_dim, num_blocks, threads_per_block);
-  cudaInitCells(d_cells, d_objects, d_positions, d_dims, num_objects,
-                max_dim, num_blocks, threads_per_block);
-  cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp,
-                d_radices, d_radix_sums, num_objects);
   cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
-  
-  
-  
+  num_cells = cudaInitCells(d_cells, d_objects, d_positions, d_dims,
+                            num_objects, max_dim, d_temp, num_blocks,
+                            threads_per_block);
+  cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp, d_radices,
+                d_radix_sums, num_objects);
+  num_collisions = cudaCellCollide(d_cells, d_objects, d_positions,
+                                   d_velocities, d_dims, num_objects,
+                                   num_cells, d_temp, num_blocks,
+                                   threads_per_block);
+  printf("%d collisions encountered.\n", num_collisions);
+  cudaFree(d_temp);
   cudaFree(d_positions);
   cudaFree(d_velocities);
   cudaFree(d_dims);
@@ -94,8 +102,6 @@ int main(int argc, char *argv[]) {
   free(positions);
   free(velocities);
   free(dims);
-  
   gpuErrChk(cudaGetLastError());
-  
   return 0;
 }

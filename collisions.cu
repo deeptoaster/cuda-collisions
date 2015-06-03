@@ -40,9 +40,131 @@ __device__ void dPrefixSum(uint32_t *values, unsigned int n) {
   }
 }
 
+__device__ void dSumReduce(unsigned int *values, unsigned int *out) {
+  // wait for the whole array to be populated
+  __syncthreads();
+  
+  // sum by reduction, using half the threads in each subsequent iteration
+  unsigned int threads = blockDim.x;
+  unsigned int half = threads / 2;
+  
+  while (half) {
+    if (threadIdx.x < half) {
+      // only keep going if the thread is in the first half threads
+      for (int k = threadIdx.x + half; k < threads; k += half) {
+        values[threadIdx.x] += values[k];
+      }
+      
+      threads = half;
+    }
+    
+    half /= 2;
+    
+    // make sure all the threads are on the same iteration
+    __syncthreads();
+  }
+  
+  // only let one thread update the current sum
+  if (!threadIdx.x) {
+    atomicAdd(out, values[0]);
+  }
+}
+
+__global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
+                                  float *positions, float *velocities,
+                                  float *dims, unsigned int n, unsigned int m,
+                                  unsigned int cells_per_thread,
+                                  unsigned int *collision_count) {
+  extern __shared__ unsigned int t[];
+  
+  int thread_start = (blockIdx.x * blockDim.x + threadIdx.x) *
+      cells_per_thread;
+  int thread_end = thread_start + cells_per_thread;
+  int start = -1;
+  int i = thread_start;
+  uint32_t last = UINT32_MAX;
+  uint32_t home;
+  uint32_t phantom;
+  unsigned int h;
+  unsigned int p;
+  unsigned int collisions = 0;
+  float dh;
+  float dp;
+  float dx;
+  float d;
+  
+  while (1) {
+    if (!blockIdx.x && !threadIdx.x) {
+      printf("%d / %d: %d (%d, %d)\n", i, m, cells[i], h, p);
+    }
+    
+    // find cell ID change indices
+    if (i >= m || cells[i] != last) {
+      // at least one home-cell object and at least one other object present
+      if (start + 1 && h >= 1 && h + p >= 2) {
+        for (int j = start; j < start + h; j++) {
+          home = objects[j] >> 1;
+          dh = dims[home];
+          
+          for (int k = j + 1; k < i; k++) {
+            phantom = objects[k] >> 1;
+            dp = dims[phantom] + dh;
+            d = 0;
+            
+            for (int l = 0; l < DIM; l++) {
+              dx = positions[phantom + l * n] -
+                  positions[home + l * n];
+              d += dx * dx;
+            }
+            
+            printf("(%d, %d): %f / %f\n", home, phantom, dp * dp, d);
+            
+            // if collision
+            if (d < dp * dp) {
+              collisions++;
+            }
+          }
+        }
+      }
+      
+      // if we're already past the cells assigned to this thread, we're done
+      if (i > thread_end || i >= m) {
+        break;
+      }
+      
+      // the first thread starts immediately; the others wait until a change
+      if (i != thread_start || !blockIdx.x && !threadIdx.x) {
+        // reset counters for new cell
+        h = 0;
+        p = 0;
+        start = i;
+        last = cells[i];
+      }
+    }
+    
+    // only process collisions that are not handled by a previous thread
+    if (start + 1) {
+      // increment home or phantom cell counter as appropriate
+      if (objects[i] & 0x01) {
+        h++;
+      } else {
+        p++;
+      }
+    }
+    
+    i++;
+  }
+  
+  t[threadIdx.x] = collisions;
+  dSumReduce(t, collision_count);
+}
+
 __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects, 
                                float *positions, float *dims, unsigned int n,
-                               float cell_dim) {
+                               float cell_dim, unsigned int *cell_count) {
+  extern __shared__ unsigned int t[];
+  unsigned int count = 0;
+  
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x *
       blockDim.x) {
     uint32_t hash = 0;
@@ -77,6 +199,7 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
     }
     
     cells[h] = hash;
+    count++;
     
     // bit 0 set indicates home cell
     objects[h] = i << 1 | 0x01;
@@ -110,6 +233,8 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
       
       // only add this cell to the list if there's potential overlap
       if (hash != UINT32_MAX) {
+        // count total number of cells occupied
+        count++;
         h++;
         
         cells[h] = hash;
@@ -130,6 +255,10 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
       m++;
     }
   }
+  
+  // perform reduction to count number of cells occupied
+  t[threadIdx.x] = count;
+  dSumReduce(t, cell_count);
 }
 
 __global__ void PrefixSumKernel(uint32_t *values, unsigned int n) {
@@ -149,10 +278,10 @@ __global__ void PrefixSumKernel(uint32_t *values, unsigned int n) {
 __global__ void RadixOrderKernel(uint32_t *keys_in, uint32_t *values_in,
                                  uint32_t *keys_out, uint32_t *values_out,
                                  uint32_t *radices, uint32_t *radix_sums,
-                                 unsigned int n, int shift) {
+                                 unsigned int n, unsigned int cells_per_group,
+                                 int shift) {
   extern __shared__ uint32_t s[];
   uint32_t *t = s + NUM_RADICES;
-  unsigned int cells_per_group = (n - 1) / NUM_BLOCKS / GROUPS_PER_BLOCK + 1;
   int group = threadIdx.x / THREADS_PER_GROUP;
   int group_start = (blockIdx.x * GROUPS_PER_BLOCK + group) * cells_per_group;
   int group_end = group_start + cells_per_group;
@@ -269,9 +398,9 @@ __global__ void RadixSumKernel(uint32_t *radices, uint32_t *radix_sums) {
 }
 
 __global__ void RadixTabulateKernel(uint32_t *keys, uint32_t *radices,
-                                    unsigned int n, int shift) {
+                                    unsigned int n,
+                                    unsigned int cells_per_group, int shift) {
   extern __shared__ uint32_t s[];
-  unsigned int cells_per_group = (n - 1) / NUM_BLOCKS / GROUPS_PER_BLOCK + 1;
   int group = threadIdx.x / THREADS_PER_GROUP;
   int group_start = (blockIdx.x * GROUPS_PER_BLOCK + group) * cells_per_group;
   int group_end = group_start + cells_per_group;
@@ -318,6 +447,37 @@ __global__ void ScaleOffsetKernel(float *arr, float scale, float offset,
 }
 
 /**
+ * @brief Performs narrow-phase collision detection on a sorted cell array.
+ * @param cells array of cells sorted by cudaSortCells.
+ * @param objects array of corresponding objects.
+ * @param positions array of object positions.
+ * @param velocities array of object velocities.
+ * @param dims array of object sizes.
+ * @param num_objects the number of objects in the arrays.
+ * @param num_cells the number of occupied cells.
+ * @param temp temporary global memory variable of length at least one.
+ * @return The number of collisions encountered.
+ */
+unsigned int cudaCellCollide(uint32_t *cells, uint32_t *objects,
+                             float *positions, float *velocities, float *dims,
+                             unsigned int num_objects, unsigned int num_cells,
+                             unsigned int *temp, unsigned int num_blocks,
+                             unsigned int threads_per_block) {
+  unsigned int cells_per_thread = (num_cells - 1) / num_blocks /
+      threads_per_block + 1;
+  unsigned int collision_count;
+  
+  cudaMemset(temp, 0, sizeof(unsigned int));
+  cellCollideKernel<<<num_blocks, threads_per_block,
+                      threads_per_block * sizeof(unsigned int)>>>(
+      cells, objects, positions, velocities, dims, num_objects, num_cells,
+      cells_per_thread, temp);
+  cudaMemcpy(&collision_count, temp, sizeof(unsigned int),
+             cudaMemcpyDeviceToHost);
+  return collision_count;
+}
+
+/**
  * @brief Constructs cell array.
  * @param cells array of cells.
  * @param objects array of corresponding objects.
@@ -325,12 +485,22 @@ __global__ void ScaleOffsetKernel(float *arr, float scale, float offset,
  * @param dims array of object sizes
  * @param num_objects the number of objects to process.
  * @param cell_dim the size of each cell in any dimension.
+ * @param temp temporary global memory variable of length at least one.
+ * @return The number of cells associations occupied
  */
-void cudaInitCells(uint32_t *cells, uint32_t *objects, float *positions,
-                   float *dims, unsigned int num_objects, float cell_dim,
-                   unsigned int num_blocks, unsigned int threads_per_block) {
-  InitCellKernel<<<num_blocks, threads_per_block>>>(
-      cells, objects, positions, dims, num_objects, cell_dim);
+unsigned int cudaInitCells(uint32_t *cells, uint32_t *objects,
+                           float *positions, float *dims,
+                           unsigned int num_objects, float cell_dim,
+                           unsigned int *temp, unsigned int num_blocks,
+                           unsigned int threads_per_block) {
+  unsigned int cell_count;
+  
+  cudaMemset(temp, 0, sizeof(unsigned int));
+  InitCellKernel<<<num_blocks, threads_per_block,
+                   threads_per_block * sizeof(unsigned int)>>>(
+      cells, objects, positions, dims, num_objects, cell_dim, temp);
+  cudaMemcpy(&cell_count, temp, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+  return cell_count;
 }
 
 /**
@@ -387,13 +557,16 @@ void cudaPrefixSum(uint32_t *values, unsigned int n) {
 void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
                    uint32_t *objects_temp, uint32_t *radices,
                    uint32_t *radix_sums, unsigned int num_objects) {
+  unsigned int cells_per_group = (num_objects * DIM_2 - 1) / NUM_BLOCKS /
+      GROUPS_PER_BLOCK + 1;
   uint32_t *cells_swap;
   uint32_t *objects_swap;
   
+  // stable sort, works on bits of increasing level
   for (int i = 0; i < 32; i += L) {
     RadixTabulateKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                           GROUPS_PER_BLOCK * NUM_RADICES * sizeof(uint32_t)>>>(
-        cells, radices, num_objects * DIM_2, i);
+        cells, radices, num_objects * DIM_2, cells_per_group, i);
     RadixSumKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                      PADDED_GROUPS * sizeof(uint32_t)>>>(
         radices, radix_sums);
@@ -401,7 +574,9 @@ void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
                        NUM_RADICES * sizeof(uint32_t) + GROUPS_PER_BLOCK *
                        NUM_RADICES * sizeof(uint32_t)>>>(
         cells, objects, cells_temp, objects_temp, radices, radix_sums,
-        num_objects * DIM_2, i);
+        num_objects * DIM_2, cells_per_group, i);
+    
+    // cells sorted up to this bit are in cells_temp; swap for the next pass
     cells_swap = cells;
     cells = cells_temp;
     cells_temp = cells_swap;
