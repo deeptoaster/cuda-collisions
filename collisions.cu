@@ -79,7 +79,7 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
     cells[h] = hash;
     
     // bit 0 set indicates home cell
-    objects[h] = i << 1 | 1;
+    objects[h] = i << 1 | 0x01;
     
     // find phantom cells in the Moore neighborhood
     for (int j = 0; j < DIM_3; j++) {
@@ -97,7 +97,7 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
         x = positions[n * k + i];
         
         // skip this cell if the object is on the wrong side
-        if (r && (sides >> (DIM - k - 1) * 2 & 3 ^ r) & 3 ||
+        if (r && (sides >> (DIM - k - 1) * 2 & 0x03 ^ r) & 0x03 ||
             x + r * cell_dim < 0 || x + r * cell_dim >= 1) {
           hash = UINT32_MAX;
           break;
@@ -129,6 +129,20 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
       objects[h] = i << 2;
       m++;
     }
+  }
+}
+
+__global__ void PrefixSumKernel(uint32_t *values, unsigned int n) {
+  extern __shared__ uint32_t s[];
+  
+  for (int i = 0; i < n; i++) {
+    s[i] = values[i];
+  }
+  
+  dPrefixSum(s, n);
+  
+  for (int i = 0; i < n; i++) {
+    values[i] = s[i];
   }
 }
 
@@ -254,8 +268,7 @@ __global__ void RadixSumKernel(uint32_t *radices, uint32_t *radix_sums) {
   }
 }
 
-__global__ void RadixTabulateKernel(uint32_t *keys,
-                                    uint32_t *radices,
+__global__ void RadixTabulateKernel(uint32_t *keys, uint32_t *radices,
                                     unsigned int n, int shift) {
   extern __shared__ uint32_t s[];
   unsigned int cells_per_group = (n - 1) / NUM_BLOCKS / GROUPS_PER_BLOCK + 1;
@@ -351,59 +364,49 @@ void cudaInitObjects(float *positions, float *velocities, float *dims,
 }
 
 /**
+ * @brief Parallelized prefix-sum algorithm.
+ * @param values array of values.
+ * @param n the number of values to process.
+ */
+void cudaPrefixSum(uint32_t *values, unsigned int n) {
+  PrefixSumKernel<<<1, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
+                    n * sizeof(uint32_t)>>>(
+      values, n);
+}
+
+/**
  * @brief Radix sorts an array of objects using occupations as keys.
- * @param cells_in the input array of cells.
- * @param objects_in the input array of objects.
- * @param cells_out sorted array of cells.
- * @param objects_out array of objects sorted by corresponding cells.
+ * @param cells the input array of cells.
+ * @param objects the input array of objects.
+ * @param cells_temp sorted array of cells.
+ * @param objects_temp array of objects sorted by corresponding cells.
  * @param radices working array to hold radix data.
  * @param radix_sums working array to hold radix prefix sums.
  * @param num_objects the number of objects included.
  */
-void cudaSortCells(uint32_t *cells_in, uint32_t *objects_in,
-                   uint32_t *cells_out, uint32_t *objects_out,
-                   uint32_t *radices, uint32_t *radix_sums,
-                   unsigned int num_objects) {
-  uint32_t *cells_temp;
-  uint32_t *objects_temp;
+void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
+                   uint32_t *objects_temp, uint32_t *radices,
+                   uint32_t *radix_sums, unsigned int num_objects) {
+  uint32_t *cells_swap;
+  uint32_t *objects_swap;
   
   for (int i = 0; i < 32; i += L) {
     RadixTabulateKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                           GROUPS_PER_BLOCK * NUM_RADICES * sizeof(uint32_t)>>>(
-        cells_in, radices, num_objects * DIM_2, i);
+        cells, radices, num_objects * DIM_2, i);
     RadixSumKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                      PADDED_GROUPS * sizeof(uint32_t)>>>(
         radices, radix_sums);
     RadixOrderKernel<<<NUM_BLOCKS, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
                        NUM_RADICES * sizeof(uint32_t) + GROUPS_PER_BLOCK *
                        NUM_RADICES * sizeof(uint32_t)>>>(
-        cells_in, objects_in, cells_out, objects_out, radices, radix_sums,
+        cells, objects, cells_temp, objects_temp, radices, radix_sums,
         num_objects * DIM_2, i);
-    cells_temp = cells_in;
-    cells_in = cells_out;
-    cells_out = cells_temp;
-    objects_temp = objects_in;
-    objects_in = objects_out;
-    objects_out = objects_temp;
+    cells_swap = cells;
+    cells = cells_temp;
+    cells_temp = cells_swap;
+    objects_swap = objects;
+    objects = objects_temp;
+    objects_temp = objects_swap;
   }
-}
-
-__global__ void PrefixSumKernel(uint32_t *values, unsigned int n) {
-  extern __shared__ uint32_t s[];
-  
-  for (int i = 0; i < n; i++) {
-    s[i] = values[i];
-  }
-  
-  dPrefixSum(s, n);
-  
-  for (int i = 0; i < n; i++) {
-    values[i] = s[i];
-  }
-}
-
-void cudaPrefixSum(uint32_t *values, unsigned int n) {
-  PrefixSumKernel<<<1, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
-                    n * sizeof(uint32_t)>>>(
-      values, n);
 }

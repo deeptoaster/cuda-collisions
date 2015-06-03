@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <stdint.h>
@@ -7,7 +8,7 @@
 #define NUM_OBJECTS 65536
 #define MAX_SPEED 0.5
 #define MAX_DIM 0.25
-#define NUM_DISPLAY 4
+#define COLS 8
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
@@ -15,21 +16,18 @@ unsigned int num_blocks = 100;
 unsigned int threads_per_block = 512;
 unsigned int object_size = NUM_OBJECTS * DIM * sizeof(float);
 unsigned int cell_size = NUM_OBJECTS * DIM_2 * sizeof(uint32_t);
-float *positions = (float *) malloc(object_size);
-float *velocities = (float *) malloc(object_size);
-float *dims = (float *) malloc(object_size);
+float *positions;
+float *velocities;
+float *dims;
 float *d_positions;
 float *d_velocities;
 float *d_dims;
-uint32_t *cells = (uint32_t *) malloc(cell_size);
-uint32_t *objects = (uint32_t *) malloc(cell_size);
-uint32_t *radices = (uint32_t *) malloc(NUM_BLOCKS * GROUPS_PER_BLOCK *
-                                        NUM_RADICES * sizeof(uint32_t));
-uint32_t *radix_sums = (uint32_t *) malloc(NUM_RADICES * sizeof(uint32_t));
-uint32_t *d_cells_in;
-uint32_t *d_cells_out;
-uint32_t *d_objects_in;
-uint32_t *d_objects_out;
+uint32_t *cells;
+uint32_t *objects;
+uint32_t *d_cells;
+uint32_t *d_cells_temp;
+uint32_t *d_objects;
+uint32_t *d_objects_temp;
 uint32_t *d_radices;
 uint32_t *d_radix_sums;
 
@@ -42,9 +40,101 @@ inline void gpuAssert(cudaError_t code, const char *file, int line,
   }
 }
 
+void TestInitCells(int n) {
+  printf("Testing InitCells...\n");
+  cudaInitCells(d_cells, d_objects, d_positions, d_dims, NUM_OBJECTS,
+                MAX_DIM, num_blocks, threads_per_block);
+  cudaMemcpy(cells, d_cells, cell_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(objects, d_objects, cell_size, cudaMemcpyDeviceToHost);
+  
+  if (NUM_OBJECTS < n) {
+    n = NUM_OBJECTS;
+  }
+  
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < DIM_2; j++) {
+      uint32_t cell = cells[i * DIM_2 + j];
+      
+      printf("%8x %8x\t", cell, objects[i * DIM_2 + j]);
+      
+      if (COLS < DIM_2 * 2) {
+        printf("\n");
+      }
+      
+      for (int k = 0; k < DIM; k++) {
+        assert(cell == UINT32_MAX || abs((cell >> (DIM - k - 1) * 8 & 0xff) *
+            MAX_DIM - positions[i + k * NUM_OBJECTS]) <
+            dims[i + k * NUM_OBJECTS]);
+      }
+    }
+    
+    if (!((i + 1) % (COLS / DIM_2 / 2))) {
+      printf("\n");
+    } else {
+      printf("\t");
+    }
+  }
+  
+  printf("\n");
+}
+
+void TestInitObjects(int n) {
+  printf("Testing InitObjects...\n");
+  cudaInitObjects(d_positions, d_velocities, d_dims, NUM_OBJECTS, MAX_SPEED, 
+                  MAX_DIM, num_blocks, threads_per_block);
+  cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
+  
+  if (NUM_OBJECTS < n) {
+    n = NUM_OBJECTS;
+  }
+  
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < DIM; j++) {
+      printf("% f ", positions[i + j * NUM_OBJECTS]);
+      assert(positions[i + j * NUM_OBJECTS] >= 0 &&
+             positions[i + j * NUM_OBJECTS] < 1);
+    }
+    
+    if (COLS < DIM * 3) {
+      printf("\n");
+    } else {
+      printf("\t");
+    }
+    
+    for (int j = 0; j < DIM; j++) {
+      printf("% f ", velocities[i + j * NUM_OBJECTS]);
+      assert(abs(velocities[i + j * NUM_OBJECTS]) < MAX_SPEED);
+    }
+    
+    if (COLS < DIM * 3) {
+      printf("\n");
+    } else {
+      printf("\t");
+    }
+    
+    for (int j = 0; j < DIM; j++) {
+      printf("% f ", dims[i + j * NUM_OBJECTS]);
+      assert(dims[i + j * NUM_OBJECTS] < MAX_DIM / 2);
+    }
+    
+    if (!(COLS / DIM / 3) || !((i + 1) % (COLS / DIM / 3))) {
+      printf("\n");
+    } else {
+      printf("\t");
+    }
+  }
+  
+  printf("\n");
+}
+
 void TestPrefixSum(int n) {
+  printf("Testing PrefixSum...\n");
+  
   uint32_t *arr = (uint32_t *) malloc(n * sizeof(uint32_t));
   uint32_t *d_arr;
+  
   cudaMalloc((void **) &d_arr, n * sizeof(uint32_t));
   
   for (int i = 0; i < n; i++) {
@@ -53,98 +143,93 @@ void TestPrefixSum(int n) {
   
   cudaMemcpy(d_arr, arr, n * sizeof(uint32_t), cudaMemcpyHostToDevice);
   cudaPrefixSum(d_arr, n);
+  cudaPrefixSum(d_arr, n);
   cudaMemcpy(arr, d_arr, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
   
-  for (int i = 0; i < n / 2; i++) {
-    printf("%d\t%d\n", arr[i * 2], arr[i * 2 + 1]);
+  for (int i = 0; i < n; i++) {
+    printf("%d\t", arr[i]);
+    
+    if (!((i + 1) % COLS)) {
+      printf("\n");
+    }
+    
+    assert(arr[i] == i * (i - 1) / 2);
   }
+  
+  free(arr);
+  cudaFree(d_arr);
+  printf("\n");
 }
 
-void TestSortCells() {
-  cudaSortCells(d_cells_in, d_objects_in, d_cells_out, d_objects_out,
+void TestSortCells(int n) {
+  printf("TestingSortCells...\n");
+  cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp,
                 d_radices, d_radix_sums, NUM_OBJECTS);
+  cudaMemcpy(cells, d_cells, cell_size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(objects, d_objects, cell_size, cudaMemcpyDeviceToHost);
   
-  for (int i = 0; i < NUM_DISPLAY; i++) {
-    printf("% f % f % f % f\t% f % f % f % f\t% f % f % f % f\n",
-           positions[i * 4], positions[i * 4 + 1], positions[i * 4 + 2], 
-           positions[i * 4 + 3], positions[i * 4 + NUM_OBJECTS],
-           positions[i * 4 + 1 + NUM_OBJECTS],
-           positions[i * 4 + 2 + NUM_OBJECTS], 
-           positions[i * 4 + 3 + NUM_OBJECTS], dims[i * 4], dims[i * 4 + 1],
-           dims[i * 4 + 2], dims[i * 4 + 3]);
+  if (NUM_OBJECTS < n) {
+    n = NUM_OBJECTS;
   }
   
-  cudaMemcpy(cells, d_cells_in, cell_size, cudaMemcpyDeviceToHost);
-  cudaMemcpy(objects, d_objects_in, cell_size, cudaMemcpyDeviceToHost);
-  
-  for (int i = 0; i < NUM_DISPLAY; i++) {
-    printf("%8x %8x %8x %8x\t%4d %4d %4d %4d\n", cells[i * 4],
-           cells[i * 4 + 1], cells[i * 4 + 2], cells[i * 4 + 3],
-           objects[i * 4], objects[i * 4 + 1], objects[i * 4 + 2],
-           objects[i * 4 + 3]);
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < DIM_2; j++) {
+      uint32_t cell = cells[i * DIM_2 + j];
+      
+      printf("%8x %8x\t", cell, objects[i * DIM_2 + j]);
+      
+      if (COLS < DIM_2 * 2) {
+        printf("\n");
+      }
+      
+      for (int k = 0; k < DIM; k++) {
+        assert((!i && !j) || cell >= cells[i * DIM_2 + j - 1]);
+      }
+    }
+    
+    if (!((i + 1) % (COLS / DIM_2 / 2))) {
+      printf("\n");
+    } else {
+      printf("\t");
+    }
   }
   
-  cudaMemcpy(cells, d_cells_out, cell_size, cudaMemcpyDeviceToHost);
-  cudaMemcpy(objects, d_objects_out, cell_size, cudaMemcpyDeviceToHost);
-  
-  for (int i = 0; i < NUM_DISPLAY; i++) {
-    printf("%8x %8x %8x %8x\t%4d %4d %4d %4d\n", cells[i * 4],
-           cells[i * 4 + 1], cells[i * 4 + 2], cells[i * 4 + 3],
-           objects[i * 4], objects[i * 4 + 1], objects[i * 4 + 2],
-           objects[i * 4 + 3]);
-  }
-  
-  cudaMemcpy(radices, d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK * NUM_RADICES *
-             sizeof(uint32_t), cudaMemcpyDeviceToHost);
-  
-  for (int i = 0; i < NUM_DISPLAY; i++) {
-    printf("%4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d\n",
-           radices[i * 16], radices[i * 16 + 1], radices[i * 16 + 2],
-           radices[i * 16 + 3], radices[i * 16 + 4], radices[i * 16 + 5],
-           radices[i * 16 + 6], radices[i * 16 + 7], radices[i * 16 + 8],
-           radices[i * 16 + 9], radices[i * 16 + 10], radices[i * 16 + 11],
-           radices[i * 16 + 12], radices[i * 16 + 13], radices[i * 16 + 14],
-           radices[i * 16 + 15]);
-  }
-  
-  cudaMemcpy(radix_sums, d_radix_sums, NUM_RADICES *
-             sizeof(uint32_t), cudaMemcpyDeviceToHost);
-  
-  for (int i = 0; i < NUM_DISPLAY; i++) {
-    printf("%4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d %4d\n",
-           radix_sums[i * 16], radix_sums[i * 16 + 1], radix_sums[i * 16 + 2],
-           radix_sums[i * 16 + 3], radix_sums[i * 16 + 4], radix_sums[i * 16 + 5],
-           radix_sums[i * 16 + 6], radix_sums[i * 16 + 7], radix_sums[i * 16 + 8],
-           radix_sums[i * 16 + 9], radix_sums[i * 16 + 10], radix_sums[i * 16 + 11],
-           radix_sums[i * 16 + 12], radix_sums[i * 16 + 13], radix_sums[i * 16 + 14],
-           radix_sums[i * 16 + 15]);
-  }
+  printf("\n");
 }
 
 int main(int argc, char *argv[]) {
+  positions = (float *) malloc(object_size);
+  velocities = (float *) malloc(object_size);
+  dims = (float *) malloc(object_size);
+  cells = (uint32_t *) malloc(cell_size);
+  objects = (uint32_t *) malloc(cell_size);
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
-  cudaMalloc((void **) &d_cells_in, cell_size);
-  cudaMalloc((void **) &d_cells_out, cell_size);
-  cudaMalloc((void **) &d_objects_in, cell_size);
-  cudaMalloc((void **) &d_objects_out, cell_size);
+  cudaMalloc((void **) &d_cells, cell_size);
+  cudaMalloc((void **) &d_cells_temp, cell_size);
+  cudaMalloc((void **) &d_objects, cell_size);
+  cudaMalloc((void **) &d_objects_temp, cell_size);
   cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
              NUM_RADICES * sizeof(uint32_t));
   cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
-  cudaMemset(d_cells_out, 0, cell_size);
-  cudaMemset(d_objects_out, 0, cell_size);
-  cudaMemset(d_radices, 0, NUM_BLOCKS * GROUPS_PER_BLOCK * NUM_RADICES *
-             sizeof(uint32_t));
-  cudaMemset(d_radix_sums, 0, NUM_RADICES * sizeof(uint32_t));
-  cudaInitObjects(d_positions, d_velocities, d_dims, NUM_OBJECTS, MAX_SPEED, 
-                  MAX_DIM, num_blocks, threads_per_block);
-  cudaInitCells(d_cells_in, d_objects_in, d_positions, d_dims, NUM_OBJECTS,
-                MAX_DIM, num_blocks, threads_per_block);
-  cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
-  cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
-  cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
-  //~ TestPrefixSum(256);
-  TestSortCells();
+  TestPrefixSum(256);
+  TestInitObjects(16);
+  TestInitCells(4);
+  TestSortCells(16);
   gpuErrChk(cudaGetLastError());
+  free(positions);
+  free(velocities);
+  free(dims);
+  free(cells);
+  free(objects);
+  cudaFree(d_positions);
+  cudaFree(d_velocities);
+  cudaFree(d_dims);
+  cudaFree(d_cells);
+  cudaFree(d_cells_temp);
+  cudaFree(d_objects);
+  cudaFree(d_objects_temp);
+  cudaFree(d_radices);
+  cudaFree(d_radix_sums);
 }

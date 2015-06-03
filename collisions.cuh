@@ -19,8 +19,7 @@ void cudaInitCells(uint32_t *cells, uint32_t *objects, float *positions,
 void cudaInitObjects(float *positions, float *velocities, float *dims,
                      unsigned int num_objects, float max_speed, float max_dim,
                      unsigned int num_blocks, unsigned int threads_per_block);
-void cudaSortCells(uint32_t *cells_in, uint32_t *objects_in,
-                   uint32_t *cells_out, uint32_t *objects_out,
-                   uint32_t *radices, uint32_t *radix_sums,
-                   unsigned int num_objects);
+void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
+                   uint32_t *objects_temp, uint32_t *radices,
+                   uint32_t *radix_sums, unsigned int num_objects);
 void cudaPrefixSum(uint32_t *values, unsigned int n);
