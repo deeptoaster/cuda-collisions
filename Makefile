@@ -26,18 +26,17 @@ else
 	NVCCFLAGS   := -m64
 endif
 
-TARGETS = collisions
-
-all: $(TARGETS)
-
 collisions: collisions.cc collisions.o collisions_cpu.o
 	$(CC) $< -o $@ collisions.o collisions_cpu.o -std=c++0x -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 collisions.o: collisions.cu
 	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
 
+docs: Doxyfile
+	doxygen Doxyfile
+
 test: collisions_test.cc collisions.o collisions_cpu.o
 	$(CC) $< -o collisions_$@ collisions.o collisions_cpu.o -std=c++0x -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 clean:
-	rm -f *.o $(TARGETS) collisions_test
+	rm -rf *.o collisions collisions_test html
