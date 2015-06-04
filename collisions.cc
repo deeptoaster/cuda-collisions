@@ -92,12 +92,12 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(positions, d_positions, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(velocities, d_velocities, object_size, cudaMemcpyDeviceToHost);
   cudaMemcpy(dims, d_dims, object_size, cudaMemcpyDeviceToHost);
+  start = chrono::system_clock::now();
   num_cells = cudaInitCells(d_cells, d_objects, d_positions, d_dims,
                             num_objects, max_dim, d_temp, num_blocks,
                             threads_per_block);
   cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp, d_radices,
                 d_radix_sums, num_objects);
-  start = chrono::system_clock::now();
   num_collisions = cudaCellCollide(d_cells, d_objects, d_positions,
                                    d_velocities, d_dims, num_objects,
                                    num_cells, d_temp, &num_tests, num_blocks,
