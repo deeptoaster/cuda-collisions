@@ -3,7 +3,9 @@
 #include <stdint.h>
 #include <cuda_runtime.h>
 #include <curand.h>
+
 #include "collisions.cuh"
+#include "collisions.h"
 
 __device__ void dPrefixSum(uint32_t *values, unsigned int n) {
   int offset = 1;
@@ -94,10 +96,6 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
   float d;
   
   while (1) {
-    if (!blockIdx.x && !threadIdx.x) {
-      printf("%d / %d: %d (%d, %d)\n", i, m, cells[i], h, p);
-    }
-    
     // find cell ID change indices
     if (i >= m || cells[i] >> 1 != last) {
       // at least one home-cell object and at least one other object present
@@ -116,8 +114,6 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
                   positions[home + l * n];
               d += dx * dx;
             }
-            
-            printf("(%d, %d): %f / %f\n", home, phantom, dp * dp, d);
             
             // if collision
             if (d < dp * dp) {
@@ -138,25 +134,18 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
         h = 0;
         p = 0;
         start = i;
-        last = cells[i];
       }
-<<<<<<< Updated upstream
-=======
       
       last = cells[i] >> 1;
->>>>>>> Stashed changes
     }
     
     // only process collisions that are not handled by a previous thread
     if (start + 1) {
-      // increment home or phantom cell counter as appropriate
       if (objects[i] & 0x01) {
+        // increment home cells
         h++;
       } else {
-<<<<<<< Updated upstream
-=======
         // increment phantom cells
->>>>>>> Stashed changes
         p++;
       }
     }

@@ -8,7 +8,7 @@
 #include "collisions.h"
 #include "collisions_cpu.h"
 
-#define NUM_OBJECTS 24
+#define NUM_OBJECTS 16384
 #define MAX_SPEED 0.5
 #define MAX_DIM 0.5
 #define COLS 8
@@ -97,10 +97,12 @@ void TestCellCollide() {
   int a = cudaCellCollide(d_cells, d_objects, d_positions, d_velocities,
                           d_dims, NUM_OBJECTS, cell_count, d_temp, num_blocks,
                           threads_per_block);
+  
+  printf("Collisions encountered on GPU: %d\n", a);
+  
   int b = CellCollide(positions, velocities, dims, NUM_OBJECTS);
   
-  printf("Collisions encountered on GPU: %d\n"
-         "Collisions encountered on CPU: %d\n\n", a, b);
+  printf("Collisions encountered on CPU: %d\n\n", b);
   assert(a >= b);
 }
 

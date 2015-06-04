@@ -1,6 +1,3 @@
-#define DIM 2
-#define DIM_2 4
-#define DIM_3 9
 #define L 8
 #define NUM_RADICES 256
 #define NUM_BLOCKS 16

@@ -30,14 +30,14 @@ TARGETS = collisions
 
 all: $(TARGETS)
 
-collisions: collisions.cpp collisions.o
-	$(CC) $< -o $@ collisions.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
+collisions: collisions.cc collisions.o collisions_cpu.o
+	$(CC) $< -o $@ collisions.o collisions_cpu.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 collisions.o: collisions.cu
 	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
 
-test: collisions_test.cpp collisions.o
-	$(CC) $< -o collisions_$@ collisions.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
+test: collisions_test.cc collisions.o collisions_cpu.o
+	$(CC) $< -o collisions_$@ collisions.o collisions_cpu.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 clean:
 	rm -f *.o $(TARGETS) collisions_test
