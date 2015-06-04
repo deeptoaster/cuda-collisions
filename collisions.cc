@@ -2,7 +2,10 @@
 #include <cstdlib>
 #include <stdint.h>
 #include <cuda_runtime.h>
+
 #include "collisions.cuh"
+#include "collisions.h"
+#include "collisions_cpu.h"
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
@@ -49,6 +52,7 @@ int main(int argc, char *argv[]) {
   unsigned int cell_size = num_objects * DIM_2 * sizeof(uint32_t);
   unsigned int num_cells;
   unsigned int num_collisions;
+  unsigned int num_collisions_cpu;
   unsigned int *d_temp;
   float *positions = (float *) malloc(object_size);
   float *velocities = (float *) malloc(object_size);
@@ -88,7 +92,9 @@ int main(int argc, char *argv[]) {
                                    d_velocities, d_dims, num_objects,
                                    num_cells, d_temp, num_blocks,
                                    threads_per_block);
-  printf("%d collisions encountered.\n", num_collisions);
+  num_collisions_cpu = CellCollide(positions, velocities, dims, num_objects);
+  printf("Collisions encountered on GPU: %d\n", num_collisions);
+  printf("Collisions encountered on CPU: %d\n", num_collisions_cpu);
   cudaFree(d_temp);
   cudaFree(d_positions);
   cudaFree(d_velocities);

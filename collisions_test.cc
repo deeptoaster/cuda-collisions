@@ -3,9 +3,12 @@
 #include <cstdlib>
 #include <stdint.h>
 #include <cuda_runtime.h>
-#include "collisions.cuh"
 
-#define NUM_OBJECTS 16
+#include "collisions.cuh"
+#include "collisions.h"
+#include "collisions_cpu.h"
+
+#define NUM_OBJECTS 24
 #define MAX_SPEED 0.5
 #define MAX_DIM 0.5
 #define COLS 8
@@ -43,6 +46,65 @@ inline void gpuAssert(cudaError_t code, const char *file, int line,
 }
 
 /**
+ * @brief Frees memory associated with test variables.
+ */
+void FinishTests() {
+  free(positions);
+  free(velocities);
+  free(dims);
+  free(cells);
+  free(objects);
+  cudaFree(d_temp);
+  cudaFree(d_positions);
+  cudaFree(d_velocities);
+  cudaFree(d_dims);
+  cudaFree(d_cells);
+  cudaFree(d_cells_temp);
+  cudaFree(d_objects);
+  cudaFree(d_objects_temp);
+  cudaFree(d_radices);
+  cudaFree(d_radix_sums);
+}
+
+/**
+ * @brief Initializes variables for testing.
+ */
+void InitTests() {
+  positions = (float *) malloc(object_size);
+  velocities = (float *) malloc(object_size);
+  dims = (float *) malloc(object_size);
+  cells = (uint32_t *) malloc(cell_size);
+  objects = (uint32_t *) malloc(cell_size);
+  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
+  cudaMalloc((void **) &d_positions, object_size);
+  cudaMalloc((void **) &d_velocities, object_size);
+  cudaMalloc((void **) &d_dims, object_size);
+  cudaMalloc((void **) &d_cells, cell_size);
+  cudaMalloc((void **) &d_cells_temp, cell_size);
+  cudaMalloc((void **) &d_objects, cell_size);
+  cudaMalloc((void **) &d_objects_temp, cell_size);
+  cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
+             NUM_RADICES * sizeof(uint32_t));
+  cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
+}
+
+/**
+ * @brief Tests cudaCellCollide by testing it against a CPU implementation.
+ */
+void TestCellCollide() {
+  printf("Testing CellCollide...\n");
+  
+  int a = cudaCellCollide(d_cells, d_objects, d_positions, d_velocities,
+                          d_dims, NUM_OBJECTS, cell_count, d_temp, num_blocks,
+                          threads_per_block);
+  int b = CellCollide(positions, velocities, dims, NUM_OBJECTS);
+  
+  printf("Collisions encountered on GPU: %d\n"
+         "Collisions encountered on CPU: %d\n\n", a, b);
+  assert(a >= b);
+}
+
+/**
  * @brief Tests cudaInitCells for cell assignment correctness.
  * @param n number of objects whose cells are checked and displayed.
  */
@@ -69,7 +131,7 @@ void TestInitCells(int n) {
       }
       
       for (int k = 0; k < DIM; k++) {
-        assert(cell == UINT32_MAX || abs((cell >> (DIM - k - 1) * 8 & 0xff) *
+        assert(cell == UINT32_MAX || abs((cell >> (DIM - k) * 8 & 0xff) *
             MAX_DIM - positions[i + k * NUM_OBJECTS]) <
             dims[i + k * NUM_OBJECTS]);
       }
@@ -220,42 +282,14 @@ void TestSortCells(int n) {
 }
 
 int main(int argc, char *argv[]) {
-  positions = (float *) malloc(object_size);
-  velocities = (float *) malloc(object_size);
-  dims = (float *) malloc(object_size);
-  cells = (uint32_t *) malloc(cell_size);
-  objects = (uint32_t *) malloc(cell_size);
-  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
-  cudaMalloc((void **) &d_positions, object_size);
-  cudaMalloc((void **) &d_velocities, object_size);
-  cudaMalloc((void **) &d_dims, object_size);
-  cudaMalloc((void **) &d_cells, cell_size);
-  cudaMalloc((void **) &d_cells_temp, cell_size);
-  cudaMalloc((void **) &d_objects, cell_size);
-  cudaMalloc((void **) &d_objects_temp, cell_size);
-  cudaMalloc((void **) &d_radices, NUM_BLOCKS * GROUPS_PER_BLOCK *
-             NUM_RADICES * sizeof(uint32_t));
-  cudaMalloc((void **) &d_radix_sums, NUM_RADICES * sizeof(uint32_t));
+  InitTests();
   TestPrefixSum(256);
   TestInitObjects(16);
   TestInitCells(16);
   TestSortCells(16);
+  TestCellCollide();
+  FinishTests();
   gpuErrChk(cudaGetLastError());
-  free(positions);
-  free(velocities);
-  free(dims);
-  free(cells);
-  free(objects);
-  cudaFree(d_temp);
-  cudaFree(d_positions);
-  cudaFree(d_velocities);
-  cudaFree(d_dims);
-  cudaFree(d_cells);
-  cudaFree(d_cells_temp);
-  cudaFree(d_objects);
-  cudaFree(d_objects_temp);
-  cudaFree(d_radices);
-  cudaFree(d_radix_sums);
   printf("All tests passed.\n");
   return 0;
 }

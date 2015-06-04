@@ -99,7 +99,7 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
     }
     
     // find cell ID change indices
-    if (i >= m || cells[i] != last) {
+    if (i >= m || cells[i] >> 1 != last) {
       // at least one home-cell object and at least one other object present
       if (start + 1 && h >= 1 && h + p >= 2) {
         for (int j = start; j < start + h; j++) {
@@ -140,6 +140,11 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
         start = i;
         last = cells[i];
       }
+<<<<<<< Updated upstream
+=======
+      
+      last = cells[i] >> 1;
+>>>>>>> Stashed changes
     }
     
     // only process collisions that are not handled by a previous thread
@@ -148,6 +153,10 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
       if (objects[i] & 0x01) {
         h++;
       } else {
+<<<<<<< Updated upstream
+=======
+        // increment phantom cells
+>>>>>>> Stashed changes
         p++;
       }
     }
@@ -198,11 +207,10 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
       }
     }
     
-    cells[h] = hash;
-    count++;
-    
-    // bit 0 set indicates home cell
+    // bit 0 unset indicates home cell
+    cells[h] = hash << 1 | 0x00;
     objects[h] = i << 1 | 0x01;
+    count++;
     
     // find phantom cells in the Moore neighborhood
     for (int j = 0; j < DIM_3; j++) {
@@ -237,10 +245,10 @@ __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects,
         count++;
         h++;
         
-        cells[h] = hash;
+        cells[h] = hash << 1 | 0x01;
         
-        // bit 0 unset indicates phantom cell
-        objects[h] = i << 1;
+        // bit 0 set indicates phantom cell
+        objects[h] = i << 1 | 0x00;
         
         // keep track of number of cells occupied
         m++;
