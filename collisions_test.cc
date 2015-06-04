@@ -75,7 +75,7 @@ void InitTests() {
   dims = (float *) malloc(object_size);
   cells = (uint32_t *) malloc(cell_size);
   objects = (uint32_t *) malloc(cell_size);
-  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
+  cudaMalloc((void **) &d_temp, 2 * sizeof(unsigned int));
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
@@ -94,16 +94,20 @@ void InitTests() {
 void TestCellCollide() {
   printf("Testing CellCollide...\n");
   
-  int a = cudaCellCollide(d_cells, d_objects, d_positions, d_velocities,
-                          d_dims, NUM_OBJECTS, cell_count, d_temp, num_blocks,
-                          threads_per_block);
+  unsigned int test_count;
+  unsigned int a = cudaCellCollide(d_cells, d_objects, d_positions,
+                                   d_velocities, d_dims, NUM_OBJECTS,
+                                   cell_count, d_temp, &test_count, num_blocks,
+                                   threads_per_block);
+  unsigned int b = CellCollide(positions, velocities, dims, NUM_OBJECTS);
+  unsigned int d = NUM_OBJECTS * (NUM_OBJECTS - 1) / 2;
   
-  printf("Collisions encountered on GPU: %d\n", a);
-  
-  int b = CellCollide(positions, velocities, dims, NUM_OBJECTS);
-  
-  printf("Collisions encountered on CPU: %d\n\n", b);
+  printf("Collisions encountered on GPU: %d\n"
+         "Collisions encountered on CPU: %d\n"
+         "Collision tests performed on GPU: %d\n"
+         "Collision tests performed on CPU: %d\n\n", a, b, test_count, d);
   assert(a >= b);
+  assert(test_count < d);
 }
 
 /**
@@ -283,9 +287,39 @@ void TestSortCells(int n) {
   printf("\n");
 }
 
+/**
+ * @brief Tests cudaSumReduce for correctness.
+ * @param n number of elements t0 sum.
+ */
+void TestSumReduce(int n) {
+  printf("Testing SumReduce...\n");
+  
+  unsigned int *arr = (unsigned int *) malloc(n * sizeof(unsigned int));
+  unsigned int *d_arr;
+  
+  cudaMalloc((void **) &d_arr, n * sizeof(unsigned int));
+  
+  for (int i = 0; i < n; i++) {
+    arr[i] = i;
+  }
+  
+  cudaMemcpy(d_arr, arr, n * sizeof(unsigned int), cudaMemcpyHostToDevice);
+  
+  unsigned int sum = cudaSumReduce(d_arr, n, d_temp);
+  
+  printf("Sum of integers between 0 and %d: %d\n", n, sum);
+  cudaMemcpy(arr, d_arr, n * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+  
+  assert((int) sum == n * (n - 1) / 2);
+  free(arr);
+  cudaFree(d_arr);
+  printf("\n");
+}
+
 int main(int argc, char *argv[]) {
   InitTests();
   TestPrefixSum(256);
+  TestSumReduce(256);
   TestInitObjects(16);
   TestInitCells(16);
   TestSortCells(16);

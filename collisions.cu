@@ -76,7 +76,8 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
                                   float *positions, float *velocities,
                                   float *dims, unsigned int n, unsigned int m,
                                   unsigned int cells_per_thread,
-                                  unsigned int *collision_count) {
+                                  unsigned int *collision_count,
+                                  unsigned int *test_count) {
   extern __shared__ unsigned int t[];
   
   int thread_start = (blockIdx.x * blockDim.x + threadIdx.x) *
@@ -90,6 +91,7 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
   unsigned int h;
   unsigned int p;
   unsigned int collisions = 0;
+  unsigned int tests = 0;
   float dh;
   float dp;
   float dx;
@@ -105,6 +107,8 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
           dh = dims[home];
           
           for (int k = j + 1; k < i; k++) {
+            // count the number of tests performed
+            tests++;
             phantom = objects[k] >> 1;
             dp = dims[phantom] + dh;
             d = 0;
@@ -155,6 +159,11 @@ __global__ void cellCollideKernel(uint32_t *cells, uint32_t *objects,
   
   t[threadIdx.x] = collisions;
   dSumReduce(t, collision_count);
+  
+  __syncthreads();
+  
+  t[threadIdx.x] = tests;
+  dSumReduce(t, test_count);
 }
 
 __global__ void InitCellKernel(uint32_t *cells, uint32_t *objects, 
@@ -443,6 +452,20 @@ __global__ void ScaleOffsetKernel(float *arr, float scale, float offset,
   }
 }
 
+__global__ void SumReduceKernel(unsigned int *values, unsigned int n,
+                                unsigned int *out) {
+  extern __shared__ unsigned int t[];
+  unsigned int sum = 0;
+  
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x *
+      blockDim.x) {
+    sum += values[i];
+  }
+  
+  t[threadIdx.x] = sum;
+  dSumReduce(t, out);
+}
+
 /**
  * @brief Performs narrow-phase collision detection on a sorted cell array.
  * @param cells array of cells sorted by cudaSortCells.
@@ -452,24 +475,28 @@ __global__ void ScaleOffsetKernel(float *arr, float scale, float offset,
  * @param dims array of object sizes.
  * @param num_objects the number of objects in the arrays.
  * @param num_cells the number of occupied cells.
- * @param temp temporary global memory variable of length at least one.
+ * @param temp temporary global memory variable of length at least two.
+ * @param num_tests returns the number of collision tests performed.
  * @return The number of collisions encountered.
  */
 unsigned int cudaCellCollide(uint32_t *cells, uint32_t *objects,
                              float *positions, float *velocities, float *dims,
                              unsigned int num_objects, unsigned int num_cells,
-                             unsigned int *temp, unsigned int num_blocks,
+                             unsigned int *temp, unsigned int *test_count,
+                             unsigned int num_blocks,
                              unsigned int threads_per_block) {
   unsigned int cells_per_thread = (num_cells - 1) / num_blocks /
       threads_per_block + 1;
   unsigned int collision_count;
   
-  cudaMemset(temp, 0, sizeof(unsigned int));
+  cudaMemset(temp, 0, 2 * sizeof(unsigned int));
   cellCollideKernel<<<num_blocks, threads_per_block,
                       threads_per_block * sizeof(unsigned int)>>>(
       cells, objects, positions, velocities, dims, num_objects, num_cells,
-      cells_per_thread, temp);
+      cells_per_thread, temp, temp + 1);
   cudaMemcpy(&collision_count, temp, sizeof(unsigned int),
+             cudaMemcpyDeviceToHost);
+  cudaMemcpy(test_count, temp + 1, sizeof(unsigned int),
              cudaMemcpyDeviceToHost);
   return collision_count;
 }
@@ -524,10 +551,10 @@ void cudaInitObjects(float *positions, float *velocities, float *dims,
   ScaleOffsetKernel<<<num_blocks, threads_per_block>>>(
       velocities, max_speed * 2, -max_speed, num_objects * DIM);
   
-  // randomly generate sizes ranging from 0 to max_dim
+  // randomly generate sizes ranging from max_dim / 2 to max_dim
   curandGenerateUniform(generator, dims, num_objects * DIM);
   ScaleOffsetKernel<<<num_blocks, threads_per_block>>>(
-      dims, max_dim / 2, 0, num_objects * DIM);
+      dims, max_dim / 4, max_dim / 4, num_objects * DIM);
 }
 
 /**
@@ -581,4 +608,24 @@ void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
     objects = objects_temp;
     objects_temp = objects_swap;
   }
+}
+
+/**
+ * @brief Sum array by reduction.
+ * @param values array of values.
+ * @param n the number of values to process.
+ * @param temp temporary global memory variable of length at least one.
+ * @return The sum of the array
+ */
+unsigned int cudaSumReduce(unsigned int *values, unsigned int n,
+                           unsigned int *temp) {
+  int sum;
+  
+  cudaMemset(temp, 0, sizeof(unsigned int));
+  SumReduceKernel<<<1, GROUPS_PER_BLOCK * THREADS_PER_GROUP,
+                    GROUPS_PER_BLOCK * THREADS_PER_GROUP *
+                      sizeof(unsigned int)>>>(
+      values, n, temp);
+  cudaMemcpy(&sum, temp, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+  return sum;
 }

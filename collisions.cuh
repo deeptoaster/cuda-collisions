@@ -13,7 +13,8 @@
 unsigned int cudaCellCollide(uint32_t *cells, uint32_t *objects,
                              float *positions, float *velocities, float *dims,
                              unsigned int num_objects, unsigned int num_cells,
-                             unsigned int *temp, unsigned int num_blocks,
+                             unsigned int *temp, unsigned int *test_count,
+                             unsigned int num_blocks,
                              unsigned int threads_per_block);
 unsigned int cudaInitCells(uint32_t *cells, uint32_t *objects,
                            float *positions, float *dims,
@@ -27,3 +28,5 @@ void cudaSortCells(uint32_t *cells, uint32_t *objects, uint32_t *cells_temp,
                    uint32_t *objects_temp, uint32_t *radices,
                    uint32_t *radix_sums, unsigned int num_objects);
 void cudaPrefixSum(uint32_t *values, unsigned int n);
+unsigned int cudaSumReduce(unsigned int *values, unsigned int n,
+                           unsigned int *temp);

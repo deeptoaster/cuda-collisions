@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <stdint.h>
@@ -8,6 +9,8 @@
 #include "collisions_cpu.h"
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+
+using namespace std;
 
 inline void gpuAssert(cudaError_t code, const char *file, int line,
     bool abort = true) {
@@ -53,6 +56,8 @@ int main(int argc, char *argv[]) {
   unsigned int num_cells;
   unsigned int num_collisions;
   unsigned int num_collisions_cpu;
+  unsigned int num_tests;
+  unsigned int num_tests_cpu;
   unsigned int *d_temp;
   float *positions = (float *) malloc(object_size);
   float *velocities = (float *) malloc(object_size);
@@ -60,14 +65,18 @@ int main(int argc, char *argv[]) {
   float *d_positions;
   float *d_velocities;
   float *d_dims;
+  double time;
+  double time_cpu;
   uint32_t *d_cells;
   uint32_t *d_cells_temp;
   uint32_t *d_objects;
   uint32_t *d_objects_temp;
   uint32_t *d_radices;
   uint32_t *d_radix_sums;
+  chrono::time_point<chrono::system_clock> start;
+  chrono::duration<double> duration;
   
-  cudaMalloc((void **) &d_temp, sizeof(unsigned int));
+  cudaMalloc((void **) &d_temp, 2 * sizeof(unsigned int));
   cudaMalloc((void **) &d_positions, object_size);
   cudaMalloc((void **) &d_velocities, object_size);
   cudaMalloc((void **) &d_dims, object_size);
@@ -88,13 +97,28 @@ int main(int argc, char *argv[]) {
                             threads_per_block);
   cudaSortCells(d_cells, d_objects, d_cells_temp, d_objects_temp, d_radices,
                 d_radix_sums, num_objects);
+  start = chrono::system_clock::now();
   num_collisions = cudaCellCollide(d_cells, d_objects, d_positions,
                                    d_velocities, d_dims, num_objects,
-                                   num_cells, d_temp, num_blocks,
+                                   num_cells, d_temp, &num_tests, num_blocks,
                                    threads_per_block);
+  duration = chrono::system_clock::now() - start;
+  time = duration.count();
+  start = chrono::system_clock::now();
   num_collisions_cpu = CellCollide(positions, velocities, dims, num_objects);
+  num_tests_cpu = num_objects * (num_objects - 1) / 2;
+  duration = chrono::system_clock::now() - start;
+  time_cpu = duration.count();
   printf("Collisions encountered on GPU: %d\n", num_collisions);
   printf("Collisions encountered on CPU: %d\n", num_collisions_cpu);
+  printf("Collision tests performed on GPU: %d\n", num_tests);
+  printf("Collision tests performed on CPU: %d\n", num_tests_cpu);
+  printf("Time spent performing tests on GPU: %f s\n", time);
+  printf("Time spent performing tests on CPU: %f s\n", time_cpu);
+  printf("Reduction in collision tests performed: %f%%\n",
+         100.0 * (num_tests_cpu - num_tests) / num_tests_cpu);
+  printf("Reduction in time spent performing tests: %f%%\n",
+         100.0 * (time_cpu - time) / time_cpu);
   cudaFree(d_temp);
   cudaFree(d_positions);
   cudaFree(d_velocities);
